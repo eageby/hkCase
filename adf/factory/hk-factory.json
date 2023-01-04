@@ -1,0 +1,9 @@
+{
+	"name": "hk-factory",
+	"location": "northeurope",
+	"identity": {
+		"type": "SystemAssigned",
+		"principalId": "74146e09-0730-437d-9ef3-7bcebc92e443",
+		"tenantId": "619505db-acbb-400b-8125-d1c7b472c007"
+	}
+}
