@@ -1,0 +1,120 @@
+{
+	"name": "CopyPipeline_xop",
+	"properties": {
+		"activities": [
+			{
+				"name": "ForEach_xop",
+				"type": "ForEach",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@pipeline().parameters.cw_items",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Copy_xop",
+							"type": "Copy",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [
+								{
+									"name": "Source",
+									"value": "dbo.@{item().source.table}"
+								},
+								{
+									"name": "Destination",
+									"value": "hkdata/transactional/@{item().destination.fileName}"
+								}
+							],
+							"typeProperties": {
+								"source": {
+									"type": "AzureSqlSource",
+									"partitionOption": "None"
+								},
+								"sink": {
+									"type": "DelimitedTextSink",
+									"storeSettings": {
+										"type": "AzureBlobFSWriteSettings"
+									},
+									"formatSettings": {
+										"type": "DelimitedTextWriteSettings",
+										"quoteAllText": true,
+										"fileExtension": ".txt"
+									}
+								},
+								"enableStaging": false,
+								"validateDataConsistency": false
+							},
+							"inputs": [
+								{
+									"referenceName": "SourceDataset_xop",
+									"type": "DatasetReference",
+									"parameters": {
+										"cw_table": "@item().source.table"
+									}
+								}
+							],
+							"outputs": [
+								{
+									"referenceName": "DestinationDataset_xop",
+									"type": "DatasetReference",
+									"parameters": {
+										"cw_fileName": "@item().destination.fileName"
+									}
+								}
+							]
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"cw_items": {
+				"type": "Array",
+				"defaultValue": [
+					{
+						"source": {
+							"table": "orderitems"
+						},
+						"destination": {
+							"fileName": "dboorderitems.txt"
+						}
+					},
+					{
+						"source": {
+							"table": "orders"
+						},
+						"destination": {
+							"fileName": "dboorders.txt"
+						}
+					},
+					{
+						"source": {
+							"table": "payments"
+						},
+						"destination": {
+							"fileName": "dbopayments.txt"
+						}
+					},
+					{
+						"source": {
+							"table": "stores"
+						},
+						"destination": {
+							"fileName": "dbostores.txt"
+						}
+					}
+				]
+			}
+		},
+		"annotations": []
+	}
+}
