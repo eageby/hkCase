@@ -9,7 +9,7 @@
 -- COMMAND ----------
 
 CREATE OR REPLACE TABLE Customer_Dimension (
-  Customer_Key BIGINT GENERATED ALWAYS AS IDENTITY KEY,
+  Customer_Key BIGINT GENERATED ALWAYS AS IDENTITY,
   Customer_First_Name VARCHAR(100) NOT NULL,
   Customer_Last_Name VARCHAR(100) NOT NULL,
   Customer_Email VARCHAR(100) NOT NULL
