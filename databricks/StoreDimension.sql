@@ -1,55 +1,178 @@
 -- Databricks notebook source
+-- DBTITLE 1,Read Transactional Data From Data Lake
 -- MAGIC %python
--- MAGIC orders = spark.read.format('csv').options(
--- MAGIC     header='true', inferschema='true').load("/mnt/hkdata/dbostores.txt")
+-- MAGIC stores = (
+-- MAGIC     spark.read.format("csv")
+-- MAGIC     .options(header="true", inferschema="true")
+-- MAGIC     .load(
+-- MAGIC         "abfss://hkdata@hkdatalake563456.dfs.core.windows.net/transactional/dbostores.txt"
+-- MAGIC     )
+-- MAGIC )
 -- MAGIC 
--- MAGIC orders.printSchema()
--- MAGIC orders.createOrReplaceTempView("Stores")
+-- MAGIC stores.createOrReplaceTempView("stores_raw_data")
 
 -- COMMAND ----------
 
-CREATE OR REPLACE TABLE Store_Dimension (
-  Store_Key BIGINT GENERATED ALWAYS AS IDENTITY,
-  Store_Number BIGINT NOT NULL,
-  Store_Area_Name VARCHAR(100) NOT NULL,
-  Store_Placement VARCHAR(20) NOT NULL
-)
+-- DBTITLE 1,Read Store Dimension From Warehouse
+-- MAGIC %python
+-- MAGIC spark.read.format("jdbc").option(
+-- MAGIC     "url",
+-- MAGIC     "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
+-- MAGIC ).option("dbtable", "Store_Dimension").option(
+-- MAGIC     "user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser")
+-- MAGIC ).option(
+-- MAGIC     "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
+-- MAGIC ).load().createOrReplaceTempView(
+-- MAGIC     "Store_Dimension"
+-- MAGIC )
 
 -- COMMAND ----------
 
-INSERT INTO Store_Dimension (Store_Number, Store_Area_Name, Store_Placement)
-SELECT DISTINCT 
+-- DBTITLE 1,Remove Duplicates of Store Number
+CREATE
+OR REPLACE TEMPORARY VIEW stores_raw_no_duplicates  AS
+SELECT
   StoreNr,
+  Area,
+  InMall
+FROM
+  (
+    SELECT
+      StoreNr,
+      Area,
+      InMall,
+      ROW_NUMBER() OVER(
+        PARTITION BY StoreNr
+        Order by
+          storenr DESC
+      ) as row_number
+    FROM
+      stores_raw_data
+  )
+WHERE
+  row_number = 1
+
+-- COMMAND ----------
+
+-- DBTITLE 1,Remove Area Names Suffix
+-- MAGIC %python
+-- MAGIC from pyspark.sql.functions import split
+-- MAGIC 
+-- MAGIC df = spark.read.table("stores_raw_no_duplicates")
+-- MAGIC split_area_col = split(df["Area"], "-", 2)
+-- MAGIC df = df.withColumn("Area", split_area_col[0])
+-- MAGIC df.createOrReplaceTempView("stores_trimmed_area_name")
+
+-- COMMAND ----------
+
+-- DBTITLE 1,Split Area into Main Area and Description
+-- MAGIC %python
+-- MAGIC df = spark.read.table("stores_trimmed_area_name")
+-- MAGIC 
+-- MAGIC from pyspark.sql.functions import when, array_union, element_at, lit, size, col, array
+-- MAGIC 
+-- MAGIC df.withColumn("split_area", split("Area", " ", 2)).withColumn(
+-- MAGIC     "split_area",
+-- MAGIC     when(
+-- MAGIC         size("split_area") == 1, array_union(col("split_area"), array(lit("Not Applicable")))
+-- MAGIC     ).otherwise(col("split_area")),
+-- MAGIC ).withColumn("Area", element_at("split_area", 1)).withColumn(
+-- MAGIC     "AreaDescription", element_at("split_area", 2)
+-- MAGIC ).drop(
+-- MAGIC     "split_area"
+-- MAGIC ).createOrReplaceTempView("stores_area_description_split")
+
+-- COMMAND ----------
+
+-- DBTITLE 1,Indicate if Main Area is Shared with Other Stores
+CREATE
+OR REPLACE TEMPORARY VIEW stores_shared_area_added AS
+SELECT
+  s.StoreNr,
+  s.Area,
+  s.AreaDescription,
+  CASE
+    WHEN c.AreaCount > 1 THEN "Shared Area"
+    ELSE "Not Shared"
+  END as SharedArea,
+  s.InMall
+FROM
+  stores_area_description_split s
+  JOIN (
+    SELECT
+      Area,
+      COUNT(*) as AreaCount
+    FROM
+      Stores_area_description_split
+    GROUP BY
+      Area
+  ) as c on s.Area = c.Area
+
+-- COMMAND ----------
+
+-- DBTITLE 1,Create Silver Quality View 
+CREATE
+OR REPLACE TEMPORARY VIEW store_silver (
+  Store_Number,
+  Store_Area_Name,
+  Store_Area_Description,
+  Store_Shared_area,
+  Store_Placement
+) AS
+SELECT
+  DISTINCT StoreNr,
   INITCAP(Area),
-  CASE WHEN InMall = 1 THEN 'In Mall' ELSE 'Outside Mall' END
- FROM Stores
+  INITCAP(AreaDescription),
+  SharedArea,
+  CASE
+    WHEN InMall = 1 THEN 'In Mall'
+    ELSE 'Outside Mall'
+  END
+FROM
+  stores_shared_area_added;
 
 -- COMMAND ----------
 
-SELECT 
-  *
-FROM Store_Dimension
+-- DBTITLE 1,Create View to Append to Warehouse Dimension
+CREATE
+OR REPLACE TEMPORARY VIEW store_insert AS
+SELECT
+  Store_Number,
+  Store_Area_Name,
+  Store_Area_Description,
+  Store_Shared_area,
+  Store_Placement
+FROM
+  store_silver
+WHERE
+  (Store_number, Store_area_name,  Store_Area_Description, store_placement) NOT IN (
+    SELECT
+      Store_Number,
+      store_area_name,
+      Store_Area_Description,
+      store_placement
+    FROM
+      Store_Dimension
+  )
 
 -- COMMAND ----------
 
-CREATE TABLE Store_Dimension_OLAP
-USING JDBC
-OPTIONS (
-url "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
-dbtable "Store_Dimension",
-user "${spark.sqlUser}",
-password "${spark.sqlPassword}"
-)
-SELECT *
-FROM Store_Dimension
-
--- COMMAND ----------
-
+-- DBTITLE 1,Append to Warehouse Dimension
 -- MAGIC %python
 -- MAGIC 
--- MAGIC stores = spark.read.table('Store_Dimension')
--- MAGIC stores.show()
-
--- COMMAND ----------
-
-
+-- MAGIC store_dim = spark.read.table("store_insert")
+-- MAGIC 
+-- MAGIC (
+-- MAGIC     store_dim.write.format("jdbc")
+-- MAGIC     .option(
+-- MAGIC         "url",
+-- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
+-- MAGIC     )
+-- MAGIC     .option("dbtable", "Store_Dimension")
+-- MAGIC     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
+-- MAGIC     .option(
+-- MAGIC         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
+-- MAGIC     )
+-- MAGIC     .mode("append")
+-- MAGIC     .save()
+-- MAGIC )
