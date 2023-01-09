@@ -1,39 +1,88 @@
 -- Databricks notebook source
 -- MAGIC %python
--- MAGIC orders = spark.read.format('csv').options(
--- MAGIC     header='true', inferschema='true').load("/mnt/hkdata/dboorders.txt")
+-- MAGIC orders = (
+-- MAGIC     spark.read.format("csv")
+-- MAGIC     .options(header="true", inferschema="true")
+-- MAGIC     .load(
+-- MAGIC         "abfss://hkdata@hkdatalake563456.dfs.core.windows.net/transactional/dboorders.txt"
+-- MAGIC     )
+-- MAGIC )
 -- MAGIC 
--- MAGIC orders.printSchema()
--- MAGIC orders.createOrReplaceTempView("Orders")
+-- MAGIC # orders.printSchema()
+-- MAGIC orders.createOrReplaceTempView("orders_bronze")
 
 -- COMMAND ----------
 
-CREATE OR REPLACE TABLE Customer_Dimension (
-  Customer_Key BIGINT GENERATED ALWAYS AS IDENTITY,
-  Customer_First_Name VARCHAR(100) NOT NULL,
-  Customer_Last_Name VARCHAR(100) NOT NULL,
-  Customer_Email VARCHAR(100) NOT NULL
-  );
-
--- COMMAND ----------
-
-INSERT INTO Customer_Dimension (Customer_First_Name, Customer_Last_Name, Customer_Email)
-select distinct
-  CASE WHEN namefirst IS NULL THEN 'Not Applicable' ELSE INITCAP(namefirst) END
-  ,CASE WHEN namelast IS NULL THEN 'Not Applicable' ELSE INITCAP(namelast) END
-  ,CASE WHEN email IS NULL THEN 'Not Applicable' ELSE LOWER(email) END 
-from orders
-where namefirst is not null or namelast is not null;
-
--- COMMAND ----------
-
-CREATE TABLE Customer_Dimension_OLAP
-USING JDBC
-OPTIONS (
-url "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
-dbtable "Customer_Dimension",
-user "${spark.sqlUser}",
-password "${spark.sqlPassword}"
-)
 SELECT *
-FROM Customer_Dimension
+from orders_bronze
+where namefirst like 'Abdulruhman'
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC spark.read.format("jdbc").option(
+-- MAGIC     "url",
+-- MAGIC     "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
+-- MAGIC ).option("dbtable", "Customer_Dimension").option(
+-- MAGIC     "user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser")
+-- MAGIC ).option(
+-- MAGIC     "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
+-- MAGIC ).load().createOrReplaceTempView(
+-- MAGIC     "Customer_Dimension"
+-- MAGIC )
+
+-- COMMAND ----------
+
+SELECT
+  *
+FROM
+  Customer_Dimension
+
+-- COMMAND ----------
+
+CREATE
+OR REPLACE TEMPORARY VIEW customer_silver (
+  customer_first_name,
+  customer_last_name,
+  customer_email
+) AS
+SELECT DISTINCT 
+  CASE
+    WHEN namefirst IS NULL THEN 'Not Provided'
+    ELSE INITCAP(namefirst)
+  END,CASE
+    WHEN namelast IS NULL THEN 'Not Provided'
+    ELSE INITCAP(namelast)
+  END,CASE
+    WHEN email IS NULL THEN 'Not Provided'
+    ELSE LOWER(email)
+  END
+from
+  orders;
+
+-- COMMAND ----------
+
+select *
+from customer_silver
+Order by customer_first_name, customer_last_name, customer_email
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC 
+-- MAGIC customer_dim = spark.read.table("customer_silver")
+-- MAGIC 
+-- MAGIC (
+-- MAGIC     customer_dim.write.format("jdbc")
+-- MAGIC     .option(
+-- MAGIC         "url",
+-- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
+-- MAGIC     )
+-- MAGIC     .option("dbtable", "Customer_Dimension")
+-- MAGIC     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
+-- MAGIC     .option(
+-- MAGIC         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
+-- MAGIC     )
+-- MAGIC     .mode("append")
+-- MAGIC     .save()
+-- MAGIC )
