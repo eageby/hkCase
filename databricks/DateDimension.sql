@@ -1,4 +1,5 @@
 -- Databricks notebook source
+-- DBTITLE 1,Load Data from Data Lake
 -- MAGIC %python
 -- MAGIC from pyspark.sql.functions import col
 -- MAGIC 
@@ -14,12 +15,28 @@
 -- MAGIC     [col(c).alias(c.replace(" ", "_")) for c in dates.columns]
 -- MAGIC )
 -- MAGIC dates.printSchema()
--- MAGIC dates.createOrReplaceTempView("Dates");
+-- MAGIC dates.createOrReplaceTempView("date_raw_data");
 
 -- COMMAND ----------
 
+-- DBTITLE 1,Read Date Dimension from Data Warehouse
+-- MAGIC %python
+-- MAGIC spark.read.format("jdbc").option(
+-- MAGIC     "url",
+-- MAGIC     "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
+-- MAGIC ).option("dbtable", "Date_Dimension").option(
+-- MAGIC     "user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser")
+-- MAGIC ).option(
+-- MAGIC     "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
+-- MAGIC ).load().createOrReplaceTempView(
+-- MAGIC     "Date_Dimension"
+-- MAGIC )
+
+-- COMMAND ----------
+
+-- DBTITLE 1,Create Silver Quality View of Dates
 CREATE
-OR REPLACE TEMPORARY VIEW Date_Dimension AS
+OR REPLACE TEMPORARY VIEW date_silver AS
 SELECT
   date_key,
   CAST(DATEADD(day, full_date, '1900-01-01') as DATE) as full_date,
@@ -50,23 +67,27 @@ SELECT
     DATEADD(day, same_day_year_ago, '1900-01-01') as DATE
   ) as same_day_year_ago
 FROM
-  Dates;
+  date_raw_data;
 
 -- COMMAND ----------
 
-SELECT
+-- DBTITLE 1,Create View of Dates to Write to Warehouse
+CREATE OR REPLACE TEMPORARY VIEW date_insert 
+AS SELECT
   *
 FROM
-  DATE_DIMENSION
+  date_silver 
+WHERE date_key NOT IN (SELECT date_key from date_dimension)
 
 -- COMMAND ----------
 
+-- DBTITLE 1,Append Dates to Warehouse Date Dimension
 -- MAGIC %python
 -- MAGIC 
--- MAGIC date_dim = spark.sql("SELECT * FROM Date_Dimension")
+-- MAGIC date_dim_insert = spark.read.table("date_insert")
 -- MAGIC 
 -- MAGIC (
--- MAGIC     date_dim.write.format("jdbc")
+-- MAGIC     date_dim_insert.write.format("jdbc")
 -- MAGIC     .option(
 -- MAGIC         "url",
 -- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
@@ -79,7 +100,3 @@ FROM
 -- MAGIC     .mode("append")
 -- MAGIC     .save()
 -- MAGIC )
-
--- COMMAND ----------
-
-
