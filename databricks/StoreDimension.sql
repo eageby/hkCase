@@ -65,22 +65,29 @@ WHERE
 
 -- COMMAND ----------
 
--- DBTITLE 1,Split Area into Main Area and Description
+-- DBTITLE 1,Extract Main Area and Description from Area Name
 -- MAGIC %python
 -- MAGIC df = spark.read.table("stores_trimmed_area_name")
 -- MAGIC 
 -- MAGIC from pyspark.sql.functions import when, array_union, element_at, lit, size, col, array
 -- MAGIC 
--- MAGIC df.withColumn("split_area", split("Area", " ", 2)).withColumn(
+-- MAGIC df.withColumn("StoreName", df["Area"]).withColumn(
+-- MAGIC     "split_area", split("Area", " ", 2)
+-- MAGIC ).withColumn(
 -- MAGIC     "split_area",
 -- MAGIC     when(
--- MAGIC         size("split_area") == 1, array_union(col("split_area"), array(lit("Not Applicable")))
+-- MAGIC         size("split_area") == 1,
+-- MAGIC         array_union(col("split_area"), array(lit("Not Applicable"))),
 -- MAGIC     ).otherwise(col("split_area")),
--- MAGIC ).withColumn("Area", element_at("split_area", 1)).withColumn(
+-- MAGIC ).withColumn(
+-- MAGIC     "Area", element_at("split_area", 1)
+-- MAGIC ).withColumn(
 -- MAGIC     "AreaDescription", element_at("split_area", 2)
 -- MAGIC ).drop(
 -- MAGIC     "split_area"
--- MAGIC ).createOrReplaceTempView("stores_area_description_split")
+-- MAGIC ).createOrReplaceTempView(
+-- MAGIC     "stores_area_description_split"
+-- MAGIC )
 
 -- COMMAND ----------
 
@@ -89,6 +96,7 @@ CREATE
 OR REPLACE TEMPORARY VIEW stores_shared_area_added AS
 SELECT
   s.StoreNr,
+  s.StoreName,
   s.Area,
   s.AreaDescription,
   CASE
@@ -114,6 +122,7 @@ FROM
 CREATE
 OR REPLACE TEMPORARY VIEW store_silver (
   Store_Number,
+  Store_Name,
   Store_Area_Name,
   Store_Area_Description,
   Store_Shared_area,
@@ -121,6 +130,7 @@ OR REPLACE TEMPORARY VIEW store_silver (
 ) AS
 SELECT
   DISTINCT StoreNr,
+  INITCAP(StoreName),
   INITCAP(Area),
   INITCAP(AreaDescription),
   SharedArea,
@@ -138,6 +148,7 @@ CREATE
 OR REPLACE TEMPORARY VIEW store_insert AS
 SELECT
   Store_Number,
+  Store_Name,
   Store_Area_Name,
   Store_Area_Description,
   Store_Shared_area,
@@ -145,12 +156,9 @@ SELECT
 FROM
   store_silver
 WHERE
-  (Store_number, Store_area_name,  Store_Area_Description, store_placement) NOT IN (
+  (Store_number) NOT IN (
     SELECT
-      Store_Number,
-      store_area_name,
-      Store_Area_Description,
-      store_placement
+      Store_Number
     FROM
       Store_Dimension
   )

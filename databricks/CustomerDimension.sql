@@ -9,13 +9,7 @@
 -- MAGIC )
 -- MAGIC 
 -- MAGIC # orders.printSchema()
--- MAGIC orders.createOrReplaceTempView("orders_bronze")
-
--- COMMAND ----------
-
-SELECT *
-from orders_bronze
-where namefirst like 'Abdulruhman'
+-- MAGIC orders.createOrReplaceTempView("orders_raw_data")
 
 -- COMMAND ----------
 
@@ -33,10 +27,45 @@ where namefirst like 'Abdulruhman'
 
 -- COMMAND ----------
 
+CREATE
+OR REPLACE TEMPORARY VIEW customer_raw_data AS
 SELECT
-  *
+  namefirst,
+  namelast,
+  email,
+  orderid,
+  storenr,
+  orderdate
 FROM
-  Customer_Dimension
+  orders_raw_data
+
+-- COMMAND ----------
+
+CREATE OR REPLACE TEMPORARY VIEW customer_formatted
+AS SELECT
+  INITCAP(namefirst) as namefirst,
+  INITCAP(namelast) as namelast,
+  LOWER(email) as email,
+  orderdate,
+  storeNr,
+  CONCAT(orderid, '-', storeNr) as order_id
+FROM 
+  customer_raw_data
+
+-- COMMAND ----------
+
+CREATE OR REPLACE TEMPORARY VIEW customer_no_duplicates
+AS SELECT
+  namefirst,
+  namelast,
+  MAX(email) as email,
+  COUNT(DISTINCT order_id) as customer_number_of_orders,
+  COUNT(DISTINCT storeNr) as customer_number_of_stores_visited
+FROM 
+  customer_formatted
+WHERE namefirst IS NOT NULL AND namelast IS NOT NULL
+GROUP BY
+  namefirst, namelast
 
 -- COMMAND ----------
 
@@ -44,33 +73,71 @@ CREATE
 OR REPLACE TEMPORARY VIEW customer_silver (
   customer_first_name,
   customer_last_name,
-  customer_email
+  customer_email,
+  customer_registered,
+  customer_recurring,
+  customer_number_of_orders,
+  customer_number_of_orders_group,
+  customer_number_of_stores_visited
 ) AS
-SELECT DISTINCT 
+SELECT
   CASE
     WHEN namefirst IS NULL THEN 'Not Provided'
-    ELSE INITCAP(namefirst)
-  END,CASE
+    ELSE namefirst
+  END,
+  CASE
     WHEN namelast IS NULL THEN 'Not Provided'
-    ELSE INITCAP(namelast)
-  END,CASE
+    ELSE namelast
+  END,
+  CASE
     WHEN email IS NULL THEN 'Not Provided'
-    ELSE LOWER(email)
-  END
+    ELSE email
+  END,
+  'Registered Customer',
+  CASE
+    WHEN customer_number_of_orders > 1 THEN 'Recurring Customer'
+    ELSE 'Not Recurring Customer'
+  END,
+  customer_number_of_orders,
+  CASE 
+      WHEN customer_number_of_orders BETWEEN 1 AND 5 THEN '1-5 Orders'
+      WHEN customer_number_of_orders BETWEEN 6 AND 10 THEN '6-10 Orders'
+      WHEN customer_number_of_orders > 10 THEN 'More than 10 Orders'
+      ELSE 'Not Applicable'
+  END as customer_number_of_orders_group,
+  customer_number_of_stores_visited
 from
-  orders;
+  customer_no_duplicates;
 
 -- COMMAND ----------
 
-select *
-from customer_silver
-Order by customer_first_name, customer_last_name, customer_email
+CREATE
+OR REPLACE TEMPORARY VIEW customer_insert AS
+SELECT
+  customer_first_name,
+  customer_last_name,
+  customer_email,
+  customer_registered,
+  customer_recurring,
+  customer_number_of_orders,
+  customer_number_of_orders_group,
+  customer_number_of_stores_visited
+FROM
+  customer_silver
+WHERE
+  (customer_first_name, customer_last_name) NOT IN (
+    SELECT
+      customer_first_name,
+      customer_last_name
+    from
+      Customer_Dimension
+  )
 
 -- COMMAND ----------
 
 -- MAGIC %python
 -- MAGIC 
--- MAGIC customer_dim = spark.read.table("customer_silver")
+-- MAGIC customer_dim = spark.read.table("customer_insert")
 -- MAGIC 
 -- MAGIC (
 -- MAGIC     customer_dim.write.format("jdbc")
@@ -86,3 +153,7 @@ Order by customer_first_name, customer_last_name, customer_email
 -- MAGIC     .mode("append")
 -- MAGIC     .save()
 -- MAGIC )
+
+-- COMMAND ----------
+
+
