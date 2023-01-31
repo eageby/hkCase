@@ -1,0 +1,5 @@
+DROP TABLE [dbo].[Customer_Dimension]
+DROP TABLE [dbo].[Date_Dimension]
+DROP TABLE [dbo].[Voucher_Dimension]
+DROP TABLE [dbo].[Store_Dimension]
+DROP TABLE [dbo].[Product_Dimension]
