@@ -1,0 +1,31 @@
+-- Databricks notebook source
+-- MAGIC %python
+-- MAGIC import itertools
+-- MAGIC 
+-- MAGIC voucher_used_values = ["No", "Yes"]
+-- MAGIC voucher_discount_range = ["Not Applicable", "1-10 %", "11-25 %", "26-50 %", "51-100 %"]
+-- MAGIC external_voucher_provider = ["Not Applicable", "Voyado"]
+-- MAGIC part_of_promotion = ["Not Applicable", "Internal Promotion"]
+-- MAGIC 
+-- MAGIC product = itertools.product(voucher_used_values, voucher_discount_range, external_voucher_provider, part_of_promotion)
+-- MAGIC voucher_data = filter(lambda x : x != ('No', 'Not Applicable', 'Not Applicable', 'Not Applicable'), product)
+-- MAGIC 
+-- MAGIC columns = ["voucher_used", "voucher_discount_range", "external_voucher_provider", "part_of_promotion"]
+-- MAGIC 
+-- MAGIC voucher_dim = spark.createDataFrame(data=voucher_data, schema=columns)
+-- MAGIC 
+-- MAGIC 
+-- MAGIC (
+-- MAGIC     voucher_dim.write.format("jdbc")
+-- MAGIC     .option(
+-- MAGIC         "url", 
+-- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
+-- MAGIC     )
+-- MAGIC     .option("dbtable", "Voucher_Dimension_staging")
+-- MAGIC     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
+-- MAGIC     .option(
+-- MAGIC         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
+-- MAGIC     )
+-- MAGIC     .mode("overwrite")
+-- MAGIC     .save()
+-- MAGIC )
