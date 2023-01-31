@@ -77,8 +77,7 @@ AS SELECT
   sku,
   productname,
   I.storeNr as storeNr,
-  namefirst,
-  namelast,
+  email,
   quantity,
   I.moneynetpriceperunit,
   I.moneyoriginalprice,
@@ -98,8 +97,7 @@ AS SELECT
   sku,
   productname,
   storeNr,
-  namefirst,
-  namelast,
+  email,
   quantity as sales_quantity,
   moneynetpriceperunit as net_unit_price,
   moneyoriginalprice as unit_price,
@@ -113,13 +111,96 @@ FROM
 
 -- COMMAND ----------
 
+CREATE
+OR REPLACE TEMPORARY VIEW sales_align_grain AS
+SELECT
+  orderdate,
+  order_id,
+  sku,
+  productname,
+  storeNr,
+  email,
+  sum(sales_quantity) as sales_quantity,
+  SUM(NET_UNIT_PRICE) / NULLIF(sum(sales_quantity), 0) as net_unit_price,
+  MAX(unit_price) as unit_price,
+  sum(discount_amount) / NULLIF(sum(sales_quantity),0 ) as discount_amount,
+  MAX(
+    Case
+      when vouchercode = 'Voyado' THEN 1
+      else 0
+    end
+  ) as external_voucher_provider,
+  MAX(
+    CASE
+      WHEN vouchercode like 'Voyado' THEN 0
+      when vouchername is not null THEN 1
+      when vouchercode is not null then 1
+      when voucherid != 0 THEN 1
+      else 0
+    END
+  ) as internal_promotion
+FROM
+  sales_conform_facts
+GROUP BY
+  orderdate,
+  order_id,
+  sku,
+  productname,
+  storeNr,
+  email
+
+-- COMMAND ----------
+
+  CREATE OR REPLACE TEMPORARY VIEW sales_discount_percentage AS SELECT
+  *, 
+  100 * (
+    1 - (NET_UNIT_PRICE / unit_price)
+  ) as discount_percentage
+  FROM sales_align_grain
+
+-- COMMAND ----------
+
+CREATE
+OR REPLACE TEMPORARY VIEW sales_remove_null AS
+SELECT
+  orderdate,
+  order_id,
+  sku,
+  productname,
+  storeNr,
+  email,
+  sales_quantity,
+  CASE
+    WHEN net_unit_price IS NULL THEN 0
+    ELSE net_unit_price
+  END as net_unit_price,
+  CASE
+    WHEN unit_price IS NULL THEN 0
+    ELSE unit_price
+  END as unit_price,
+  CASE
+    WHEN discount_amount IS NULL THEN 0
+    ELSE discount_amount
+  END as discount_amount,
+    CASE
+    WHEN discount_percentage IS NULL THEN 0
+    ELSE discount_percentage
+  END as discount_percentage,
+  external_voucher_provider,
+  internal_promotion
+FROM
+  sales_discount_percentage
+
+-- COMMAND ----------
+
 CREATE OR REPLACE TEMPORARY VIEW sales_derived_facts
 AS SELECT
   *,
   sales_quantity * discount_amount as extended_discount_amount,
-  sales_quantity * unit_price as extended_sales_amount
+  sales_quantity * unit_price as extended_sales_amount,
+  sales_quantity * unit_price -  sales_quantity * discount_amount as total_sales 
 FROM 
-  sales_conform_facts
+  sales_remove_null
   
 
 -- COMMAND ----------
@@ -132,19 +213,43 @@ SELECT
   sku,
   productname,
   storeNr,
-  namefirst,
-  namelast,
+  email,
   sales_quantity,
   net_unit_price,
   unit_price,
   discount_amount,
-  voucherid,
-  vouchername,
-  vouchercode,
   extended_discount_amount,
-  extended_sales_amount
+  extended_sales_amount,
+  total_sales,
+  discount_percentage,
+  external_voucher_provider,
+  internal_promotion
 FROM
   sales_derived_facts
+
+-- COMMAND ----------
+
+CREATE
+OR REPLACE TEMPORARY VIEW sales_conform_products AS
+SELECT
+  orderdate,
+  order_id,
+  INITCAP(sku)   as sku,
+  productname,
+  storeNr,
+  email,
+  sales_quantity,
+  net_unit_price,
+  unit_price,
+  discount_amount,
+  extended_discount_amount,
+  extended_sales_amount,
+  total_sales,
+  discount_percentage,
+  external_voucher_provider,
+  internal_promotion
+FROM
+  sales_concat_order_id
 
 -- COMMAND ----------
 
@@ -155,7 +260,7 @@ SELECT
   DATE_FORMAT(TIMESTAMP_SECONDS(orderdate), 'yyyyMMdd') as date_key,
   DATE_FORMAT(TIMESTAMP_SECONDS(orderdate), 'HH:mm:ss') as time_of_day
 FROM
-  sales_concat_order_id;
+  sales_conform_products;
 
 -- COMMAND ----------
 
@@ -165,13 +270,7 @@ SELECT
   order_id,
   storeNr,
   sku,
-    CASE
-    WHEN namefirst IS NULL THEN 'Not Provided'
-    ELSE INITCAP(namefirst)
-  END as customer_first_name,CASE
-    WHEN namelast IS NULL THEN 'Not Provided'
-    ELSE INITCAP(namelast)
-  END  as customer_last_name,
+  CASE WHEN email IS NULL THEN 'Not Provided' ELSE LOWER(email) END as customer_email,
   date_key,
   time_of_day,
   sales_quantity,
@@ -180,21 +279,22 @@ SELECT
   discount_amount,
   extended_discount_amount,
   extended_sales_amount,
-  voucherid,
-  vouchername,
-  vouchercode
+    total_sales,
+    discount_percentage,
+  external_voucher_provider,
+  internal_promotion
 FROM
   sales_conform_date
 
 -- COMMAND ----------
 
-CREATE OR REPLACE TEMPORARY VIEW sales_conform_voucher
-AS SELECT
+CREATE
+OR REPLACE TEMPORARY VIEW sales_conform_voucher AS
+SELECT
   order_id,
-  storeNr,
+  storeNr as store_number,
   sku,
-  customer_first_name,
-  customer_last_name,
+  customer_email,
   date_key,
   time_of_day,
   sales_quantity,
@@ -203,136 +303,65 @@ AS SELECT
   discount_amount,
   extended_discount_amount,
   extended_sales_amount,
-   CASE WHEN voucherid IS NOT NULL AND NOT voucherid = 0 THEN  UPPER(voucherid) ELSE 'Not Applicable' END as voucher_id,
-   CASE WHEN vouchercode IS NOT NULL  THEN INITCAP(vouchercode) ELSE 'Not Applicable' END  AS voucher_code,
-   CASE WHEN vouchername IS NOT NULL THEN INITCAP(vouchername) ELSE 'Not Applicable' END AS voucher_name
-FROM sales_conform_customer_fields
+    total_sales,
+  CASE
+    WHEN internal_promotion = 1 THEN "Internal Promotion"
+    ELSE "Not Applicable"
+  END as part_of_promotion,
+  CASE
+    WHEN external_voucher_provider = 1 THEN "Voyado"
+    ELSE "Not Applicable"
+  END as external_voucher_provider,
+  CASE
+    WHEN external_voucher_provider = 1
+    or internal_promotion = 1 THEN "Yes"
+    ELSE "No"
+  END as voucher_used,
+  CASE
+    WHEN discount_percentage BETWEEN 1.0
+    AND 10.0 THEN "1-10 %"
+    WHEN discount_percentage BETWEEN 11.0
+    AND 25.0 THEN "11-25 %"
+    WHEN discount_percentage BETWEEN 26.0
+    AND 50.0 THEN "26-50 %"
+    WHEN discount_percentage BETWEEN 51.0
+    AND 100.0 THEN "51-100 %"
+    ELSE "Not Applicable"
+  END as voucher_discount_range
+FROM
+  sales_conform_customer_fields
 
 -- COMMAND ----------
 
 CREATE
-OR REPLACE TEMPORARY VIEW sales_product_dimension AS
+OR REPLACE TEMPORARY VIEW sales_fact AS
 SELECT
-  order_id,
-  storeNr,
-  customer_first_name,
-  customer_last_name,
-  date_key,
+  date_key ,
+  sku ,
+   store_number ,
+  customer_email ,
+  voucher_discount_range ,
+  voucher_used ,
+  part_of_promotion ,
+  external_voucher_provider ,
+  order_id ,
   time_of_day,
-  product_key,
-  sales_quantity,
-  net_unit_price,
-  unit_price,
-  discount_amount,
-  extended_discount_amount,
+  sales_quantity ,
+  unit_price ,
+  discount_amount ,
+  net_unit_price ,
+  extended_discount_amount ,
   extended_sales_amount,
-  voucher_id,
-  voucher_code,
-  voucher_name
+    total_sales
+
 FROM
-  sales_conform_voucher s
-  JOIN product_dimension p ON s.sku = p.sku
+  sales_conform_voucher
 
 -- COMMAND ----------
 
-CREATE
-OR REPLACE TEMPORARY VIEW sales_store_dimension AS
-SELECT
-  order_id,
-  customer_first_name,
-  customer_last_name,
-  date_key,
-  time_of_day,
-  product_key,
-  store_key,
-  sales_quantity,
-  net_unit_price,
-  unit_price,
-  discount_amount,
-  extended_discount_amount,
-  extended_sales_amount,
-    voucher_id,
-  voucher_code,
-  voucher_name
-FROM
-  sales_product_dimension s
-  JOIN store_dimension p ON storeNr = store_number
-
--- COMMAND ----------
-
-CREATE
-OR REPLACE TEMPORARY VIEW sales_customer_dimension AS
-SELECT
-  date_key,
-  time_of_day,
-  product_key,
-  store_key,
-  customer_key,
-  order_id,
-  sales_quantity,
-  net_unit_price,
-  unit_price,
-  discount_amount,
-  extended_discount_amount,
-  extended_sales_amount,
-    voucher_id,
-  voucher_code,
-  voucher_name
-FROM
-  sales_store_dimension S
-  JOIN customer_dimension C on S.customer_first_name = C.customer_first_name
-  AND S.customer_last_name = C.customer_last_name
-
--- COMMAND ----------
-
-CREATE
-OR REPLACE TEMPORARY VIEW sales_voucher_dimension AS
-SELECT
-  date_key,
-  time_of_day,
-  product_key,
-  store_key,
-  customer_key,
-  voucher_key,
-  order_id,
-  sales_quantity,
-  net_unit_price,
-  unit_price,
-  discount_amount,
-  extended_discount_amount,
-  extended_sales_amount
-FROM
-  sales_customer_dimension S
-  JOIN voucher_dimension V on S.voucher_code = V.voucher_code
-  AND S.voucher_name = V.voucher_name
-  AND S.voucher_id = V.voucher_id
-
--- COMMAND ----------
-
-CREATE
-OR REPLACE TEMPORARY VIEW sales_fact_silver AS
-SELECT
-  date_key,
-  product_key,
-  store_key,
-  customer_key,
-  voucher_key,
-  order_id,
-  time_of_day,
-  sales_quantity,
-  unit_price,
-  discount_amount,
-  net_unit_price,
-  extended_discount_amount,
-  extended_sales_amount
-FROM
-  sales_voucher_dimension
-
--- COMMAND ----------
-
--- MAGIC %python
+-- MAGIC  %python
 -- MAGIC 
--- MAGIC sales_fact = spark.read.table("sales_fact_silver")
+-- MAGIC sales_fact = spark.read.table("sales_fact")
 -- MAGIC 
 -- MAGIC (
 -- MAGIC     sales_fact.write.format("jdbc")
@@ -340,7 +369,7 @@ FROM
 -- MAGIC         "url",
 -- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
 -- MAGIC     )
--- MAGIC     .option("dbtable", "Sales_Fact")
+-- MAGIC     .option("dbtable", "Sales_Fact_Staging")
 -- MAGIC     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
 -- MAGIC     .option(
 -- MAGIC         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
@@ -348,3 +377,34 @@ FROM
 -- MAGIC     .mode("append")
 -- MAGIC     .save()
 -- MAGIC )
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC import pyodbc
+-- MAGIC 
+-- MAGIC server = "hk-analysis.database.windows.net"
+-- MAGIC 
+-- MAGIC username = dbutils.secrets.get(scope="key-vault", key="analysisSqlUser")
+-- MAGIC 
+-- MAGIC password = dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
+-- MAGIC 
+-- MAGIC conn = pyodbc.connect(
+-- MAGIC     "DRIVER=ODBC Driver 17 for SQL Server;SERVER=hk-analysis.database.windows.net;DATABASE=analysis;UID={user};PWD={password}".format(
+-- MAGIC         user=username, password=password
+-- MAGIC     )
+-- MAGIC )
+-- MAGIC 
+-- MAGIC 
+-- MAGIC cursor = conn.cursor()
+-- MAGIC 
+-- MAGIC cursor.execute(
+-- MAGIC     "EXECUTE Merge_sales"
+-- MAGIC )
+-- MAGIC 
+-- MAGIC conn.commit()
+
+-- COMMAND ----------
+
+-- MAGIC %python
+-- MAGIC conn.close()

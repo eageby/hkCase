@@ -71,20 +71,10 @@ FROM
 
 -- COMMAND ----------
 
--- DBTITLE 1,Create View of Dates to Write to Warehouse
-CREATE OR REPLACE TEMPORARY VIEW date_insert 
-AS SELECT
-  *
-FROM
-  date_silver 
-WHERE date_key NOT IN (SELECT date_key from date_dimension)
-
--- COMMAND ----------
-
 -- DBTITLE 1,Append Dates to Warehouse Date Dimension
 -- MAGIC %python
 -- MAGIC 
--- MAGIC date_dim_insert = spark.read.table("date_insert")
+-- MAGIC date_dim_insert = spark.read.table("date_silver")
 -- MAGIC 
 -- MAGIC (
 -- MAGIC     date_dim_insert.write.format("jdbc")
@@ -92,7 +82,7 @@ WHERE date_key NOT IN (SELECT date_key from date_dimension)
 -- MAGIC         "url",
 -- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
 -- MAGIC     )
--- MAGIC     .option("dbtable", "Date_Dimension")
+-- MAGIC     .option("dbtable", "Date_Dimension_Staging")
 -- MAGIC     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
 -- MAGIC     .option(
 -- MAGIC         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")

@@ -143,32 +143,10 @@ FROM
 
 -- COMMAND ----------
 
--- DBTITLE 1,Create View to Append to Warehouse Dimension
-CREATE
-OR REPLACE TEMPORARY VIEW store_insert AS
-SELECT
-  Store_Number,
-  Store_Name,
-  Store_Area_Name,
-  Store_Area_Description,
-  Store_Shared_area,
-  Store_Placement
-FROM
-  store_silver
-WHERE
-  (Store_number) NOT IN (
-    SELECT
-      Store_Number
-    FROM
-      Store_Dimension
-  )
-
--- COMMAND ----------
-
 -- DBTITLE 1,Append to Warehouse Dimension
 -- MAGIC %python
 -- MAGIC 
--- MAGIC store_dim = spark.read.table("store_insert")
+-- MAGIC store_dim = spark.read.table("store_silver")
 -- MAGIC 
 -- MAGIC (
 -- MAGIC     store_dim.write.format("jdbc")
@@ -176,11 +154,11 @@ WHERE
 -- MAGIC         "url",
 -- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
 -- MAGIC     )
--- MAGIC     .option("dbtable", "Store_Dimension")
+-- MAGIC     .option("dbtable", "Store_Dimension_staging")
 -- MAGIC     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
 -- MAGIC     .option(
 -- MAGIC         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
 -- MAGIC     )
--- MAGIC     .mode("append")
+-- MAGIC     .mode("overwrite")
 -- MAGIC     .save()
 -- MAGIC )

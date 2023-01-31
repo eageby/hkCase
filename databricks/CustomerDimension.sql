@@ -56,16 +56,29 @@ FROM
 
 CREATE OR REPLACE TEMPORARY VIEW customer_no_duplicates
 AS SELECT
-  namefirst,
-  namelast,
-  MAX(email) as email,
-  COUNT(DISTINCT order_id) as customer_number_of_orders,
-  COUNT(DISTINCT storeNr) as customer_number_of_stores_visited
+  MAX(namefirst) as namefirst,
+  MAX(namelast) as namelast,
+  email,
+  COUNT(DISTINCT order_id) as customer_number_of_orders
 FROM 
   customer_formatted
-WHERE namefirst IS NOT NULL AND namelast IS NOT NULL
+  WHERE email is not null
 GROUP BY
-  namefirst, namelast
+  email
+
+-- COMMAND ----------
+
+CREATE
+OR REPLACE TEMPORARY VIEW customer_aggregated_orders AS
+SELECT
+  namefirst,
+  namelast,
+  email,
+  C.customer_number_of_orders + COALESCE(D.customer_number_of_orders, 0) as customer_number_of_orders
+FROM
+  customer_no_duplicates C
+  LEFT JOIN customer_dimension D on C.email = D.customer_email
+  AND D.current_row_indicator = 'Current'
 
 -- COMMAND ----------
 
@@ -78,7 +91,7 @@ OR REPLACE TEMPORARY VIEW customer_silver (
   customer_recurring,
   customer_number_of_orders,
   customer_number_of_orders_group,
-  customer_number_of_stores_visited
+  customer_active
 ) AS
 SELECT
   CASE
@@ -89,10 +102,7 @@ SELECT
     WHEN namelast IS NULL THEN 'Not Provided'
     ELSE namelast
   END,
-  CASE
-    WHEN email IS NULL THEN 'Not Provided'
-    ELSE email
-  END,
+  email,
   'Registered Customer',
   CASE
     WHEN customer_number_of_orders > 1 THEN 'Recurring Customer'
@@ -105,39 +115,15 @@ SELECT
       WHEN customer_number_of_orders > 10 THEN 'More than 10 Orders'
       ELSE 'Not Applicable'
   END as customer_number_of_orders_group,
-  customer_number_of_stores_visited
+  'Active' as customer_active
 from
-  customer_no_duplicates;
-
--- COMMAND ----------
-
-CREATE
-OR REPLACE TEMPORARY VIEW customer_insert AS
-SELECT
-  customer_first_name,
-  customer_last_name,
-  customer_email,
-  customer_registered,
-  customer_recurring,
-  customer_number_of_orders,
-  customer_number_of_orders_group,
-  customer_number_of_stores_visited
-FROM
-  customer_silver
-WHERE
-  (customer_first_name, customer_last_name) NOT IN (
-    SELECT
-      customer_first_name,
-      customer_last_name
-    from
-      Customer_Dimension
-  )
+  customer_aggregated_orders;
 
 -- COMMAND ----------
 
 -- MAGIC %python
 -- MAGIC 
--- MAGIC customer_dim = spark.read.table("customer_insert")
+-- MAGIC customer_dim = spark.read.table("customer_silver")
 -- MAGIC 
 -- MAGIC (
 -- MAGIC     customer_dim.write.format("jdbc")
@@ -145,12 +131,12 @@ WHERE
 -- MAGIC         "url",
 -- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
 -- MAGIC     )
--- MAGIC     .option("dbtable", "Customer_Dimension")
+-- MAGIC     .option("dbtable", "Customer_Dimension_Staging")
 -- MAGIC     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
 -- MAGIC     .option(
 -- MAGIC         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
 -- MAGIC     )
--- MAGIC     .mode("append")
+-- MAGIC     .mode("overwrite")
 -- MAGIC     .save()
 -- MAGIC )
 

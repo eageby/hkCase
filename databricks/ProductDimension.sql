@@ -54,11 +54,10 @@ FROM
 
 -- DBTITLE 1,Remove duplicates
 CREATE
-OR REPLACE TEMPORARY VIEW products_raw_no_duplicates AS
+OR REPLACE TEMPORARY VIEW products_remove_duplicates AS
 SELECT
-  Sku,
-  product_name,
-  order_date
+  INITCAP(Sku) as sku,
+  product_name
 FROM
   (
     SELECT
@@ -68,45 +67,30 @@ FROM
       ROW_NUMBER() OVER(
         PARTITION BY INITCAP(sku)
         ORDER BY
-          order_date DESC
+          CASE WHEN product_name is not null then 1 else 0 END DESC, order_date DESC
       ) as row_number
     FROM
      products_raw_data 
   )
 WHERE
   row_number = 1
+  and sku is not null
 
 -- COMMAND ----------
 
 CREATE OR REPLACE TEMPORARY VIEW product_silver AS 
-SELECT 
-  CASE WHEN sku IS NULL THEN 'Not Applicable' ELSE sku END as sku,
-  product_name
+SELECT
+  sku,
+  CASE WHEN product_name IS NULL THEN 'Not Applicable' ELSE product_name END as product_name
 FROM
-  products_raw_no_duplicates
-
--- COMMAND ----------
-
-CREATE OR REPLACE TEMPORARY VIEW product_insert 
-AS SELECT 
-  sku, product_name
-FROM 
-  product_silver
-WHERE
-  (sku, product_name) NOT IN (
-  SELECT 
-    sku,
-    product_name
-   FROM product_dimension
-   )
-
+  products_remove_duplicates
 
 -- COMMAND ----------
 
 -- DBTITLE 1,Add New Entries to Product Dimension in Warehouse
 -- MAGIC %python
 -- MAGIC 
--- MAGIC product_dim = spark.read.table("product_insert")
+-- MAGIC product_dim = spark.read.table("product_silver")
 -- MAGIC 
 -- MAGIC (
 -- MAGIC     product_dim.write.format("jdbc")
@@ -114,53 +98,11 @@ WHERE
 -- MAGIC         "url",
 -- MAGIC         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
 -- MAGIC     )
--- MAGIC     .option("dbtable", "Product_Dimension")
+-- MAGIC     .option("dbtable", "Product_Dimension_Staging")
 -- MAGIC     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
 -- MAGIC     .option(
 -- MAGIC         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
 -- MAGIC     )
--- MAGIC     .mode("append")
+-- MAGIC     .mode("overwrite")
 -- MAGIC     .save()
 -- MAGIC )
-
--- COMMAND ----------
-
--- DBTITLE 1,Load Updated Product Dimension from Data Warehouse into Update Staging Table
--- MAGIC %python 
--- MAGIC # product_dim_loader.load().write.mode("overwrite").option("mergeSchema","true").saveAsTable("Product_dimension_staging")
-
--- COMMAND ----------
-
--- DBTITLE 1,Perform Update on Staging Table
--- UPDATE 
---   Product_Dimension_Staging
--- SET
---   Product_name = "HELLO"
--- WHERE product_key = 32
-
--- COMMAND ----------
-
--- DBTITLE 1,Replace Data Warehouse Dimension with Updated Staging Table
--- MAGIC %python
--- MAGIC 
--- MAGIC # product_dim_staging = spark.read.table("product_dimension_staging")
--- MAGIC 
--- MAGIC # (
--- MAGIC #     product_dim_staging.write.format("jdbc")
--- MAGIC #     .option(
--- MAGIC #         "url",
--- MAGIC #         "jdbc:sqlserver://hk-analysis.database.windows.net;databaseName=analysis;",
--- MAGIC #     )
--- MAGIC #     .option("dbtable", "Product_Dimension")
--- MAGIC #     .option("user", dbutils.secrets.get(scope="key-vault", key="analysisSqlUser"))
--- MAGIC #     .option(
--- MAGIC #         "password", dbutils.secrets.get(scope="key-vault", key="analysisSqlPassword")
--- MAGIC #     )
--- MAGIC #     .mode("overwrite")
--- MAGIC #     .save()
--- MAGIC # )
-
--- COMMAND ----------
-
--- DBTITLE 1,Drop Staging Table
--- DROP TABLE IF EXISTS Product_Dimension_Staging 
